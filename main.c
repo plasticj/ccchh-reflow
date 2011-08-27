@@ -7,6 +7,8 @@
 
 
 #define BAUD 1000000UL// Baudrate UL UL UL UL
+#define TIMER_PRESCALE ((1 << CS01) | (1 << CS00))
+#define TIMER_PRELOAD 6
 
 #define uart_maxstrlen 50
 
@@ -27,6 +29,13 @@ uint16_t i = 0;
 uint8_t j = 0;
 uint8_t state = 0; 
 float tempvol = 0;
+volatile uint16_t worldclock = 0;
+volatile uint16_t last_period = 0;
+volatile uint16_t period_dur = 0;
+
+
+// PT1000 values for 0,100,200,300,400 deg C
+const float tempcal[5] = {1000, 1385.055, 1758.56, 2120.515, 2470.92};
 
 void uart_init(unsigned int ubrr) {
 	UCSRB |= (1 << RXEN) | (1 << RXCIE) | (1 << TXEN); // reciever/transmitter ein, reciever interrupt ein
@@ -83,13 +92,32 @@ void uart_gets() {
         }
 }
 
-double convert_adc_to_celsius(uint16_t wert) {
-	double volt = wert * 2.461 / (1024.0);
-	return volt;
+float convert_adc_to_celsius(uint16_t wert) {
+	float R = 1000 * (wert * 2.5 / (1024.0));
+	uint8_t i = 0;
+
+	// t < 0 deg C
+	if (R < tempcal[0]) { 
+		return -1;
+	}
+	
+	for (i = 0; i< 5; i++) {
+		// i*100 < t <= (i+1)*100 deg C
+		if ( (R > tempcal[i]) && (R <= tempcal[i+1]) ) {
+			return i*100 + (100-0)/(tempcal[i+1]-tempcal[i])*(R-tempcal[i]);
+		}
+	}
+
+	// t > 400 deg C
+	if (R > tempcal[4]) {
+		return 0 + (100-0)/(tempcal[4]-tempcal[3])*(R-tempcal[4]);
+	}
+
+	return 1234;
 }
 
 uint16_t read_adc(void) {
-	uint8_t i = 0;
+	//uint8_t i = 0;
 	ADCSRA |= ( 1 << ADSC);
 	while ( ADCSRA & (1 << ADSC) );
 	uint16_t x;
@@ -117,38 +145,26 @@ ISR(USART_RXC_vect) {
         }
 }
 
-ISR (TIMER0_OVF_vect) {
-	cli();
-	i++;
-	if (i % 30 == 0) {
-		uint16_t temp;
-		temp = 	read_adc();
-		double tmp2 = convert_adc_to_celsius(temp);
-		char buf[60];
-		sprintf(buf, " %.3f\r\n", tmp2);
-		uart_puts(buf);
-		sprintf(buf, "%u\r\n", temp);
-		uart_puts(buf);
-		if (tmp2 > 2.1) {
-			state = 0;
-			uart_puts("shutdown!\r\n");
-		}
-	}
-	sei();
+ISR (TIMER0_OVF_vect) { //overflows every 0.001s == 1ms
+	TCNT0 = TIMER_PRELOAD;
+	worldclock++;
 }
 
 ISR (INT0_vect) {
+	// 
+	//period_dur = worldclock - last_period;
+	//last_period  = worldclock;
 	if (state == 1) {
 	_delay_us(0);
 	PORTC |= (1 << PC1);
-	_delay_us(10);
+	_delay_us(20);
 	PORTC &= ~(1 << PC1);
 	}
 }
 
 
 int main(void) {
-
+/* INIT SECTION */
 	cli();
 	uart_init(UBRR_VAL);
 
@@ -164,24 +180,42 @@ int main(void) {
 	DDRC |= (1 << PC1);
 
 	// avcc
-//	ADMUX &= ~(1 << REFS0);
-//	ADMUX &= ~(1 << REFS1);
-//	ADMUX &= ~(1 << ADLAR);
 	ADMUX = 0x00;
 	ADCSRA &= ~(1 << ADFR);
 	ADCSRA |= (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
 
-	TCCR0 |= (1 << CS02) | (1 << CS00); // Timer0, Clock/1024
-	TIMSK |= (1<<TOIE0); //Interrupt auf Overflow
 //	external interrupt 0 enable
 	GICR = (1 << INT0);
-//	steigende und fallende flanke
-	MCUCR = (1 << ISC00);
-	sei();
+//	fallende flanke
+	MCUCR = (1 << ISC11);
 
+
+	worldclock = 0;
+	TCCR0 |= TIMER_PRESCALE; // Timer0, Clock/64
+	TCNT0 = TIMER_PRELOAD;
+	TIMSK |= (1<<TOIE0); //Interrupt auf Overflow
+
+	sei();
+/* END INIT SECTION */
 	uart_puts("Hallo Welt!\r\n");
-	while(1) {
-		_delay_ms(100);
+	char buf[60];
+	uint16_t lastprint = 0;
+	while(1) {	
+		_delay_us(1);
+		if (worldclock >= (lastprint + 1000) ) { // each 1s
+			uint16_t temp;
+			temp = 	read_adc();
+			float tmp2 = convert_adc_to_celsius(temp);
+
+			sprintf(buf, "clk: %u period: %ums raw: %u conv: %.3f state: %u\r\n", worldclock,period_dur, temp, tmp2, state);
+			uart_puts(buf);
+			if (tmp2 > 300) {
+				state = 0;
+				uart_puts("shutdown!\r\n");
+			}
+			lastprint = worldclock;
+		}
+
 	}
 
 	return 0;

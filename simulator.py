@@ -17,8 +17,11 @@ def main():
 		x = time()-start
 		t = startt + maxt*(1-math.exp(-x/50))+(random()-0.5)*noise
 		t = abs(t)
-		fd.write(str(t)+'\n')
-		fd.flush()
+		try:
+			fd.write(str(t)+'\n')
+			fd.flush()
+		except:
+			pass
 
 
 
