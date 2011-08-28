@@ -9,7 +9,8 @@ OBJECTS = main.c
 COMMON = -mmcu=$(MCU)
 
 CFLAGS = $(COMMON)
-CFLAGS += -Wall -Os -Wl,-u,vfprintf -lprintf_flt -lm 
+#CFLAGS += -Wall -Os -Wl,-u,vfprintf -lprintf_flt -lm 
+CFLAGS += -Wall -Os 
 
 CDEFS = -DF_CPU=$(F_CPU)UL
 CFLAGS += $(CDEFS)

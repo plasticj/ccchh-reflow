@@ -1,22 +1,16 @@
 #include <avr/io.h>
-
 #include <avr/interrupt.h>
 #include <util/delay.h>
-#include <stdio.h>
-#include <string.h>
-
+#include <stdlib.h>
 
 #define BAUD 1000000UL// Baudrate UL UL UL UL
-#define TIMER_PRESCALE ((1 << CS01) | (1 << CS00))
-#define TIMER_PRELOAD 6
 
-#define uart_maxstrlen 50
+#define TIMER_TICKS_PER_HP 624
+#define uart_maxstrlen 30
 
 volatile uint8_t uart_str_complete=0;
 volatile uint8_t uart_str_count=0;
 volatile char uart_string[uart_maxstrlen+1]="";
-volatile char state_b=0;
-volatile uint8_t transmit_state=0;
 // Berechnungen
 #define UBRR_VAL ((F_CPU+BAUD*8)/(BAUD*16)-1)   // clever runden
 #define BAUD_REAL (F_CPU/(16*(UBRR_VAL+1)))     // Reale Baudrate
@@ -25,14 +19,8 @@ volatile uint8_t transmit_state=0;
  #error Systematischer Fehler der Baudrate grösser 1% und damit zu hoch! 
 #endif
 
-uint16_t i = 0;
-uint8_t j = 0;
-uint8_t state = 0; 
-float tempvol = 0;
-volatile uint16_t worldclock = 0;
-volatile uint16_t last_period = 0;
-volatile uint16_t period_dur = 0;
 
+uint8_t state = 0; 
 
 // PT1000 values for 0,100,200,300,400 deg C
 const float tempcal[5] = {1000, 1385.055, 1758.56, 2120.515, 2470.92};
@@ -55,9 +43,16 @@ inline void uart_putc(unsigned char c)
     UDR = c;                      /* sende Zeichen */
 }
 
+inline int strcmp (const char * s1, const char * s2) {
+	for(; *s1 == *s2; ++s1, ++s2) {
+		if(*s1 == 0)
+			return 0;
+	}
+	return *(unsigned char *)s1 < *(unsigned char *)s2 ? -1 : 1;
+}
 
 /* puts ist unabhaengig vom Controllertyp */
-void uart_puts (char *s)
+inline void uart_puts (char *s)
 {
     while (*s)
     {   /* so lange *s != '\0' also ungleich dem "String-Endezeichen" */
@@ -66,13 +61,18 @@ void uart_puts (char *s)
     }
 }
 
-uint8_t uart_getc(void) {
+inline uint8_t uart_getc(void) {
 	while (!(UCSRA & (1 << RXC) )) {
 	}
 	return UDR;
 }
 
 
+
+static inline void uart_puti(uint16_t data) { /* send integer per UART */
+	uint8_t buffer[7];
+	uart_puts(utoa(data, buffer, 10));
+}
 
 void uart_gets() {
         unsigned char buffer;
@@ -127,11 +127,44 @@ uint16_t read_adc(void) {
 	return x;
 }
 
+// uint16_t test_period(void) {
+// 	// ext interrupt aus
+// //	GICR &= ~(1 << INT0);
+// 
+// 	uint16_t test[4];
+// 	uint8_t i = 0;
+// 	for (; i < 4; i++) {
+// 		// warten bis PD2 high geht
+// 		while(! (PINB & (1 << PB2)));
+// 		// warten bis PD2 low geht
+// 		while(PINB & (1 << PB2));
+// 		//	jetzt ZC
+// 		//	16btimer1 = 0, starten
+// 		TCNT1 = 0;
+// 		TCCR1B |= (1 << CS12); //clk/256
+// 		//	warten bis ZC-signal wieder high
+// 		while(! (PINB & (1 << PB2)));
+// 		//	warten bis ZC-signal wieder low
+// 		while(PINB & (1 << PB2));
+// 
+// 		//	timer ablesen
+// 		test[i] = TCNT1;
+// 	}
+// 	// ext interrupt ein
+// //	GICR |= (1 << INT0);
+// 
+// 	return (test[3]+test[2]+test[1]+test[0])/8; //return half-period
+// }
+
 ISR(USART_RXC_vect) {
         uart_gets();
         if ( uart_str_complete == 1) {
-                uart_puts("bekommen: ");
+                uart_puts("got: ");
                 uart_puts(uart_string);
+		if (uart_string[0] == 'l') {
+			OCR1B = atoi(&uart_string[1]);
+		}
+
 		if (0 == strcmp(uart_string, "on")) {
                		uart_puts("on!\r\n");
 			state = 1;
@@ -140,28 +173,31 @@ ISR(USART_RXC_vect) {
 			state = 0;
                		uart_puts("off!\r\n");
 		}
-               uart_puts("\r\n");
-                uart_str_complete = 0;
+//		if (0 == strcmp(uart_string, "t")) {
+//			uint16_t dur = test_period();
+//			uart_puts("p: ");
+//			uart_puti(dur);
+//			uart_puts("samp.\r\n");
+//		}
+
+		uart_puts("\r\n");
+		uart_str_complete = 0;
         }
 }
 
-ISR (TIMER0_OVF_vect) { //overflows every 0.001s == 1ms
-	TCNT0 = TIMER_PRELOAD;
-	worldclock++;
-}
-
-ISR (INT0_vect) {
-	// 
-	//period_dur = worldclock - last_period;
-	//last_period  = worldclock;
-	if (state == 1) {
+ISR(TIMER1_COMPB_vect) {
 	_delay_us(0);
 	PORTC |= (1 << PC1);
-	_delay_us(20);
+	_delay_us(5);
 	PORTC &= ~(1 << PC1);
-	}
 }
 
+ISR(INT0_vect) {
+	// setze timer zurück
+	TCNT1 = 0;
+	// OCR1B wert erreicht -> compb_vect
+	// OCR1A -> dauer der periode
+}
 
 int main(void) {
 /* INIT SECTION */
@@ -186,35 +222,41 @@ int main(void) {
 
 //	external interrupt 0 enable
 	GICR = (1 << INT0);
-//	fallende flanke
-	MCUCR = (1 << ISC11);
+//	steigende und fallende flanke
+	MCUCR = (1 << ISC10);
 
+	// 16bit timer1 : CTC mode
+	// TCNT1 == OCR1A or TCNT1 == ICR1
+	// OCF1A or ICF1 flag -> INT oVF
+	TCCR1B |= (1<<WGM12) | ( 1 << CS12); // CTC mode; clk = clkio/256
+	TCCR1B &= ~( (1 <<WGM13));
+	TCCR1A &= ~( (1 << WGM11) | (1 << WGM10) ); 
+	// ttop: OCR1A: ocr1x immedia, TOV1 set on MAX
+	OCR1A = TIMER_TICKS_PER_HP;
 
-	worldclock = 0;
-	TCCR0 |= TIMER_PRESCALE; // Timer0, Clock/64
-	TCNT0 = TIMER_PRELOAD;
-	TIMSK |= (1<<TOIE0); //Interrupt auf Overflow
+	OCR1B = 255;
+	TIMSK |= (1 << OCIE1B);
 
 	sei();
 /* END INIT SECTION */
-	uart_puts("Hallo Welt!\r\n");
-	char buf[60];
-	uint16_t lastprint = 0;
-	while(1) {	
-		_delay_us(1);
-		if (worldclock >= (lastprint + 1000) ) { // each 1s
-			uint16_t temp;
-			temp = 	read_adc();
-			float tmp2 = convert_adc_to_celsius(temp);
 
-			sprintf(buf, "clk: %u period: %ums raw: %u conv: %.3f state: %u\r\n", worldclock,period_dur, temp, tmp2, state);
-			uart_puts(buf);
-			if (tmp2 > 300) {
-				state = 0;
-				uart_puts("shutdown!\r\n");
-			}
-			lastprint = worldclock;
+	uart_puts("Init!\r\n");
+	char buf[30];
+
+	while(1) {	
+		_delay_ms(2000);
+		float tmp2 = convert_adc_to_celsius(read_adc() );
+		dtostrf(tmp2, 6, 1, buf);
+		uart_puts(buf);
+		uart_puts(" ");
+		uart_puti(OCR1B);
+		uart_puts("\r\n");
+
+		if (tmp2 > 300) {
+			OCR1B = TIMER_TICKS_PER_HP+100;
+			uart_puts("off!\r\n");
 		}
+
 
 	}
 
