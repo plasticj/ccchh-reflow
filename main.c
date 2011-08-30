@@ -19,8 +19,9 @@ volatile char uart_string[uart_maxstrlen+1]="";
  #error Systematischer Fehler der Baudrate grösser 1% und damit zu hoch! 
 #endif
 
+#define ROUND(x)    ((unsigned) ((x) + .5))
 
-uint8_t state = 0; 
+uint8_t dim_val = 0;  // 0: aus: 255: max leistung
 
 // PT1000 values for 0,100,200,300,400 deg C
 const float tempcal[5] = {1000, 1385.055, 1758.56, 2120.515, 2470.92};
@@ -127,34 +128,39 @@ uint16_t read_adc(void) {
 	return x;
 }
 
-// uint16_t test_period(void) {
-// 	// ext interrupt aus
-// //	GICR &= ~(1 << INT0);
-// 
-// 	uint16_t test[4];
-// 	uint8_t i = 0;
-// 	for (; i < 4; i++) {
-// 		// warten bis PD2 high geht
-// 		while(! (PINB & (1 << PB2)));
-// 		// warten bis PD2 low geht
-// 		while(PINB & (1 << PB2));
-// 		//	jetzt ZC
-// 		//	16btimer1 = 0, starten
-// 		TCNT1 = 0;
-// 		TCCR1B |= (1 << CS12); //clk/256
-// 		//	warten bis ZC-signal wieder high
-// 		while(! (PINB & (1 << PB2)));
-// 		//	warten bis ZC-signal wieder low
-// 		while(PINB & (1 << PB2));
-// 
-// 		//	timer ablesen
-// 		test[i] = TCNT1;
-// 	}
-// 	// ext interrupt ein
-// //	GICR |= (1 << INT0);
-// 
-// 	return (test[3]+test[2]+test[1]+test[0])/8; //return half-period
-// }
+ uint16_t test_period(void) {
+ 	// ext interrupt aus
+ 	GICR &= ~(1 << INT0);
+ 
+ 	uint16_t test[4];
+ 	uint8_t i = 0;
+ 	for (; i < 4; i++) {
+ 		// warten bis PD2 high geht
+ 		while(! (PINB & (1 << PB2)));
+ 		// warten bis PD2 low geht
+ 		while(PINB & (1 << PB2));
+ 		//	jetzt ZC
+ 		//	16btimer1 = 0, starten
+ 		TCNT1 = 0;
+ 		TCCR1B |= (1 << CS12); //clk/256
+ 		//	warten bis ZC-signal wieder high
+ 		while(! (PINB & (1 << PB2)));
+ 		//	warten bis ZC-signal wieder low
+ 		while(PINB & (1 << PB2));
+ 
+ 		//	timer ablesen
+ 		test[i] = TCNT1;
+ 	}
+ 	// ext interrupt ein
+	GICR |= (1 << INT0);
+ 
+ 	return (test[3]+test[2]+test[1]+test[0])/8; //return half-period
+ }
+
+uint16_t dim_val_to_timer(const uint8_t dim) {
+	static const float d = 2.44531;
+	return ROUND( (255 - dim) * d + d );
+}
 
 ISR(USART_RXC_vect) {
         uart_gets();
@@ -162,24 +168,21 @@ ISR(USART_RXC_vect) {
                 uart_puts("got: ");
                 uart_puts(uart_string);
 		if (uart_string[0] == 'l') {
-			OCR1B = atoi(&uart_string[1]);
+			dim_val = atoi(&uart_string[1]);
+			OCR1B = dim_val_to_timer(dim_val);
 		}
-
-		if (0 == strcmp(uart_string, "on")) {
-               		uart_puts("on!\r\n");
-			state = 1;
+		if (uart_string[0] == '?') {
+			uart_puti(OCR1B);
+			uart_puts(" ");
+			uart_puti(dim_val);
+			uart_puts("\r\n");
 		}
-		if (0 == strcmp(uart_string, "off")) {
-			state = 0;
-               		uart_puts("off!\r\n");
+		if (0 == strcmp(uart_string, "t")) {
+			uint16_t dur = test_period();
+			uart_puts("p: ");
+			uart_puti(dur);
+			uart_puts("samp.\r\n");
 		}
-//		if (0 == strcmp(uart_string, "t")) {
-//			uint16_t dur = test_period();
-//			uart_puts("p: ");
-//			uart_puti(dur);
-//			uart_puts("samp.\r\n");
-//		}
-
 		uart_puts("\r\n");
 		uart_str_complete = 0;
         }
@@ -242,18 +245,40 @@ int main(void) {
 
 	uart_puts("Init!\r\n");
 	char buf[30];
-
+	float temp = 22;
+	uint8_t j = 0;
+	uint16_t adcval = read_adc();
+	uint16_t xk1 = adcval;
+	int16_t vk = 0, vk1 = 0, r = 0;
 	while(1) {	
-		_delay_ms(2000);
-		float tmp2 = convert_adc_to_celsius(read_adc() );
-		dtostrf(tmp2, 6, 1, buf);
+		_delay_ms(700);
+		
+		// alpha-beta filter
+		#define ALPHA 0.9
+		#define BETA 0.02
+		//prediction
+		adcval = xk1 + vk;
+		vk = vk1;
+		// error
+		r = read_adc() - adcval;
+		// correct estimate
+		adcval += ALPHA * r;
+		vk += (BETA * r);
+		vk1 = vk;
+		xk1 = adcval;
+
+		temp = convert_adc_to_celsius(adcval);
+		dtostrf(temp, 6, 1, buf);
 		uart_puts(buf);
-		uart_puts(" ");
-		uart_puti(OCR1B);
+//		uart_puts(" ");
+//		uart_puti(OCR1B);
+//		uart_puts(" ");
+//		uart_puti(dim_val);
 		uart_puts("\r\n");
 
-		if (tmp2 > 300) {
+		if (temp > 300) {
 			OCR1B = TIMER_TICKS_PER_HP+100;
+			dim_val = 0;
 			uart_puts("off!\r\n");
 		}
 

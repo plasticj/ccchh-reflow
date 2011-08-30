@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from Tkinter import *
+from tkFileDialog import *
 from graph import *
 
 import re
@@ -14,11 +15,16 @@ class App:
 		frame = Frame(master)
 		frame.pack()
 
+		self.T = Label(frame, text="Aktuelle Temperatur: X")
+		self.T.pack(side=LEFT)
+
 		self.button = Button(frame, text="QUIT", fg="red", command=frame.quit)
 		self.button.pack(side=LEFT)
 
-		self.hi_there = Button(frame, text="Hello", command=self.say_hi)
-		self.hi_there.pack(side=LEFT)
+		self.openSource= Button(frame, text="Open", command=self.openDia)
+		self.openSource.pack(side=LEFT)
+
+
 
 		self.gw = 800
 		self.gh = 600
@@ -30,32 +36,55 @@ class App:
 		self.graph.ytics = 50
 		self.graph.xlabel="t"
 		self.graph.ylabel="T"
+		
 		self.graph.refresh()
+
+		self.openSource= Button(frame, text="Reset", command=self.startNew)
+		self.openSource.pack(side=LEFT)
 
 #		self.graph.create_line(10,10,400,400, fill="red")
 		self.graph.pack()
 		self.lastpoint=(0,20)
+		self.source = ""
 		self.lastline=""
 		self.t = 0
+	
+	def startNew(self):
+		self.t = 0
+		self.graph.reset()
+		self.lastpoint=(0,20)
+		self.lastline=""
+
+	def setSource(self, s):
+		olds = self.source
+		try:
+			self.source = s
+			f = os.open(self.source, os.O_RDONLY | os.O_NONBLOCK)
+			fd = os.fdopen(f)
+			self.master.createfilehandler(fd, tkinter.READABLE, self.handle_input)
+		except Exception as e:
+			showwarning("Error", e)
+			self.source = olds
+
+
+	def openDia(self):
+		self.setSource(askopenfilename())
+		self.startNew()
 
 	def add_value(self, t, temp):
 		self.graph.add_point(t,temp)
 
 		self.lastpoint=(t,temp)
 
-
-	
-	def say_hi(self):
-		print("hi there, everyone!")
-
 	def refresh(self):
-		print("lastline is: %s" % self.lastline)
+		#print("lastline is: %s" % self.lastline)
 		if len(self.lastline.strip()) > 1:
 			newT = float(self.lastline.strip())
 		else:
 			newT = None
 
 		if (newT):
+			self.T.config(text="Last T: %.1f" % newT)
 			self.add_value(self.t,newT)
 		self.t = self.t + 1
 		if (self.t >= self.graph.rangex[1]):
@@ -125,14 +154,7 @@ class App:
 root = Tk()
 app = App(root)
 
-try:
-	filename = sys.argv[1]
-	f = os.open(filename, os.O_RDONLY | os.O_NONBLOCK)
-	fd = os.fdopen(f)
-	root.createfilehandler(fd, tkinter.READABLE, app.handle_input)
-except Exception as e:
-	print("exception '%s' occured" % e)
-	sys.exit(1)
+app.setSource(sys.argv[1])
 
 root.after(0,app.refresh)
 root.mainloop()
