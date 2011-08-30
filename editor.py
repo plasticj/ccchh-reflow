@@ -3,33 +3,48 @@
 from Tkinter import *
 from tkFileDialog import *
 from graph import *
+from threading import Thread
+from serial import *
+from trxthread import *
 
+import atexit
 import re
 import serial
 import os,sys
 
 class App:
 	def __init__(self, master):
+		self.serThread = None
 		self.master = master
 
-		frame = Frame(master)
-		frame.pack()
+		topframe = Frame(master)
+		topframe.pack(side=TOP)
 
-		self.T = Label(frame, text="Aktuelle Temperatur: X")
+		rightframe = Frame(master)
+		rightframe.pack(side=RIGHT)
+
+		self.T = Label(topframe, text="-")
 		self.T.pack(side=LEFT)
 
-		self.button = Button(frame, text="QUIT", fg="red", command=frame.quit)
+		self.button = Button(topframe, text="QUIT", fg="red", command=self.quit)
 		self.button.pack(side=LEFT)
+		atexit.register(self.quit)
 
-		self.openSource= Button(frame, text="Open", command=self.openDia)
+		self.openSource= Button(topframe, text="Open File...", command=self.openDia)
 		self.openSource.pack(side=LEFT)
 
+		self.ttyOpenButton = Button(topframe, text="Open TTY", command=self.openTTY)
+		self.ttyOpenButton.pack(side=RIGHT)
+		self.ttyname = StringVar()
+		self.ttyEntry = Entry(topframe, textvariable=self.ttyname, bg="magenta")
+		self.ttyEntry.pack(side=RIGHT)
+		self.ttyname.set("/dev/ttyUSB0")
 
 
-		self.gw = 800
+		self.gw = 1200
 		self.gh = 600
 
-		self.graph = Graph(master, width=self.gw, height=self.gh, background="white")
+		self.graph = Graph(master, width=self.gw-200, height=self.gh, background="white")
 		self.graph.rangex = (0,11)
 		self.graph.rangey = (10,150)
 		self.graph.xtics = 10
@@ -39,16 +54,26 @@ class App:
 		
 		self.graph.refresh()
 
-		self.openSource= Button(frame, text="Reset", command=self.startNew)
+		self.openSource= Button(topframe, text="Reset", command=self.startNew)
 		self.openSource.pack(side=LEFT)
 
 #		self.graph.create_line(10,10,400,400, fill="red")
-		self.graph.pack()
+		self.graph.pack(side=LEFT)
 		self.lastpoint=(0,20)
 		self.source = ""
 		self.lastline=""
 		self.t = 0
+		self.sollT = 20
+
+		self.sc = Scale(rightframe, orient=HORIZONTAL, length=200, from_=20, to=300, label="Soll T:", variable=self.sollT)
+		self.sc.pack(side=RIGHT)
 	
+	def quit(self):
+		if self.serThread:
+			self.serThread.stop()
+			self.serThread.join()
+		self.master.quit()
+
 	def startNew(self):
 		self.t = 0
 		self.graph.reset()
@@ -66,6 +91,25 @@ class App:
 			showwarning("Error", e)
 			self.source = olds
 
+	def receiving(self, con):
+		buf = ''
+		while True:
+			buf = buf + con.read(con.inWaiting())
+			if '\n' in buf:
+				lines = buf.split('\n') # Guaranteed to have at least 2 entries
+				self.lastline = lines[-2]
+				#If the Arduino sends lots of empty lines, you'll lose the
+				#last filled line, so you could make the above statement conditional
+				#like so: if lines[-2]: last_received = lines[-2]
+				buf = lines[-1]
+
+	def openTTY(self):
+		if self.serThread:
+			self.serThread.stop()
+			self.serThread.join()
+		print(self.ttyname.get())
+		self.serThread = TRXThread(self.ttyname.get(), 1000000)
+		self.serThread.start()
 
 	def openDia(self):
 		self.setSource(askopenfilename())
@@ -77,9 +121,16 @@ class App:
 		self.lastpoint=(t,temp)
 
 	def refresh(self):
-		#print("lastline is: %s" % self.lastline)
+		if self.serThread:
+			self.serThread.lastlock.acquire()
+			self.lastline = self.serThread.last
+			self.serThread.lastlock.release()
+		print("lastline is: %s" % self.lastline)
 		if len(self.lastline.strip()) > 1:
-			newT = float(self.lastline.strip())
+			try:
+				newT = float(self.lastline.strip())
+			except ValueError:
+				newT = None
 		else:
 			newT = None
 
@@ -154,7 +205,10 @@ class App:
 root = Tk()
 app = App(root)
 
-app.setSource(sys.argv[1])
+try:
+	app.setSource(sys.argv[1])
+except:
+	pass
 
 root.after(0,app.refresh)
 root.mainloop()
