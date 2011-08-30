@@ -22,6 +22,10 @@ class TRXThread(threading.Thread):
 		self.stopped = True
 		if self.serCon:
 			self.serCon.close()
+
+	def send(self, s):
+		if self.serCon:
+			self.serCon.write(s)
  
 	def run(self): 
 		buf = ''

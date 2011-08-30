@@ -66,7 +66,15 @@ class App:
 		self.sollT = 20
 
 		self.sc = Scale(rightframe, orient=HORIZONTAL, length=200, from_=20, to=300, label="Soll T:", variable=self.sollT)
-		self.sc.pack(side=RIGHT)
+		self.sc.pack(side=BOTTOM)
+
+		self.regel = 0
+		self.scr = Scale(rightframe, orient=HORIZONTAL, length=200, from_=0, to=255, label="Regel:", variable=self.regel, command=self.setr)
+		self.scr.pack(side=TOP)
+
+	def setr(self, val):
+		if self.serThread:
+			self.serThread.send("l%s\r\n" % val)
 	
 	def quit(self):
 		if self.serThread:
@@ -90,18 +98,6 @@ class App:
 		except Exception as e:
 			showwarning("Error", e)
 			self.source = olds
-
-	def receiving(self, con):
-		buf = ''
-		while True:
-			buf = buf + con.read(con.inWaiting())
-			if '\n' in buf:
-				lines = buf.split('\n') # Guaranteed to have at least 2 entries
-				self.lastline = lines[-2]
-				#If the Arduino sends lots of empty lines, you'll lose the
-				#last filled line, so you could make the above statement conditional
-				#like so: if lines[-2]: last_received = lines[-2]
-				buf = lines[-1]
 
 	def openTTY(self):
 		if self.serThread:
@@ -137,7 +133,7 @@ class App:
 		if (newT):
 			self.T.config(text="Last T: %.1f" % newT)
 			self.add_value(self.t,newT)
-		self.t = self.t + 1
+			self.t = self.t + 1
 		if (self.t >= self.graph.rangex[1]):
 			self.graph.rangex = (self.graph.rangex[0],self.t+5)
 			self.graph.refresh()
